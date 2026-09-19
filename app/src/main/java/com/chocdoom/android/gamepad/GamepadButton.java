@@ -9,9 +9,15 @@ import android.os.Looper;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewParent;
 
 import org.libsdl.app.SDLActivity;
 
+/**
+ * Multi-touch friendly button.
+ * Tracks its own pointerId and asks parent not to intercept,
+ * so look (second finger) keeps working while this button is held.
+ */
 public class GamepadButton extends View {
 
     private Paint bgPaint;
@@ -25,7 +31,6 @@ public class GamepadButton extends View {
     private String label = "";
     private int keycode = 0;
 
-    // Cyclic mode
     private int[] cycleKeys = null;
     private int cycleIndex = 0;
 
@@ -33,6 +38,8 @@ public class GamepadButton extends View {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Runnable pendingKeyUp = null;
+
+    private int activePointerId = -1;
 
     public GamepadButton(Context context) { super(context); init(); }
     public GamepadButton(Context context, AttributeSet attrs) { super(context, attrs); init(); }
@@ -102,47 +109,79 @@ public class GamepadButton extends View {
         handler.postDelayed(pendingKeyUp, 100);
     }
 
+    private void pressAction() {
+        if (cycleKeys != null && cycleKeys.length > 0) {
+            int k = cycleKeys[cycleIndex];
+            sendTemporaryKey(k);
+            cycleIndex = (cycleIndex + 1) % cycleKeys.length;
+            pressed = true;
+        } else if (temporary) {
+            sendTemporaryKey(keycode);
+            pressed = true;
+        } else if (toggle) {
+            toggledOn = !toggledOn;
+            if (toggledOn) {
+                SDLActivity.onNativeKeyDown(keycode);
+            } else {
+                SDLActivity.onNativeKeyUp(keycode);
+            }
+        } else {
+            pressed = true;
+            SDLActivity.onNativeKeyDown(keycode);
+        }
+        invalidate();
+    }
+
+    private void releaseAction() {
+        if (cycleKeys != null) {
+            pressed = false;
+        } else if (temporary) {
+            pressed = false;
+        } else if (!toggle) {
+            pressed = false;
+            SDLActivity.onNativeKeyUp(keycode);
+        }
+        invalidate();
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        switch (event.getActionMasked()) {
+        int action = event.getActionMasked();
+        int actionIndex = event.getActionIndex();
+        int pointerId = event.getPointerId(actionIndex);
+
+        switch (action) {
             case MotionEvent.ACTION_DOWN:
-                if (cycleKeys != null && cycleKeys.length > 0) {
-                    int k = cycleKeys[cycleIndex];
-                    android.util.Log.d("ChocDoomGP", "Cycle key: " + k);
-                    sendTemporaryKey(k);
-                    cycleIndex = (cycleIndex + 1) % cycleKeys.length;
-                    pressed = true;
-                } else if (temporary) {
-                    android.util.Log.d("ChocDoomGP", "Temp key: " + keycode);
-                    sendTemporaryKey(keycode);
-                    pressed = true;
-                } else if (toggle) {
-                    toggledOn = !toggledOn;
-                    if (toggledOn) {
-                        SDLActivity.onNativeKeyDown(keycode);
-                    } else {
-                        SDLActivity.onNativeKeyUp(keycode);
+            case MotionEvent.ACTION_POINTER_DOWN: {
+                if (activePointerId == -1) {
+                    activePointerId = pointerId;
+                    ViewParent parent = getParent();
+                    if (parent != null) {
+                        parent.requestDisallowInterceptTouchEvent(true);
                     }
-                } else {
-                    pressed = true;
-                    SDLActivity.onNativeKeyDown(keycode);
+                    pressAction();
+                    return true;
                 }
-                invalidate();
-                return true;
+                return false;
+            }
 
             case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                if (cycleKeys != null) {
-                    pressed = false;
-                } else if (temporary) {
-                    pressed = false;
-                    // keyUp уже отправлен через postDelayed
-                } else if (!toggle) {
-                    pressed = false;
-                    SDLActivity.onNativeKeyUp(keycode);
+            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_CANCEL: {
+                if (pointerId == activePointerId) {
+                    activePointerId = -1;
+                    releaseAction();
+                    ViewParent parent = getParent();
+                    if (parent != null) {
+                        parent.requestDisallowInterceptTouchEvent(false);
+                    }
+                    return true;
                 }
-                invalidate();
-                return true;
+                return false;
+            }
+
+            case MotionEvent.ACTION_MOVE:
+                return activePointerId != -1;
         }
         return super.onTouchEvent(event);
     }

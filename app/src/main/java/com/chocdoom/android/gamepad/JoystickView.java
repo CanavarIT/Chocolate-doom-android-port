@@ -7,22 +7,37 @@ import android.graphics.Paint;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewParent;
 
 import org.libsdl.app.SDLActivity;
 
+/**
+ * Analog joystick for Mouse Lock style controls.
+ *
+ * Up/Down  → forward / back
+ * Left/Right → strafe left / strafe right
+ *
+ * Turning is done ONLY by finger swipe (relative mouse) in GamepadOverlay.
+ * This stick never sends turn keys.
+ */
 public class JoystickView extends View {
 
-    // Android keycodes для стрелок
-    private static final int KEY_UP    = 19;
-    private static final int KEY_DOWN  = 20;
-    private static final int KEY_LEFT  = 21;
-    private static final int KEY_RIGHT = 22;
+    // Forward / Back — DPAD (works out of the box)
+    private static final int KEY_FORWARD = 19; // KEYCODE_DPAD_UP
+    private static final int KEY_BACK    = 20; // KEYCODE_DPAD_DOWN
+
+    // Strafe — A / D (bound in default.cfg to key_strafeleft / key_straferight)
+    private static final int KEY_STRAFE_LEFT  = 29; // KEYCODE_A
+    private static final int KEY_STRAFE_RIGHT = 32; // KEYCODE_D
 
     private Paint bgPaint, borderPaint, knobPaint;
     private float cx, cy, radius;
     private float knobX, knobY;
 
-    private boolean upHeld, downHeld, leftHeld, rightHeld;
+    private boolean forwardHeld, backHeld, strafeLeftHeld, strafeRightHeld;
+
+    // Multi-touch: which finger owns this joystick (-1 = free)
+    private int activePointerId = -1;
 
     public JoystickView(Context c) { super(c); init(); }
     public JoystickView(Context c, AttributeSet a) { super(c, a); init(); }
@@ -63,32 +78,77 @@ public class JoystickView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
-        float x = e.getX();
-        float y = e.getY();
+        int action = e.getActionMasked();
+        int actionIndex = e.getActionIndex();
+        int pointerId = e.getPointerId(actionIndex);
 
-        switch (e.getActionMasked()) {
+        switch (action) {
             case MotionEvent.ACTION_DOWN:
-            case MotionEvent.ACTION_MOVE:
+            case MotionEvent.ACTION_POINTER_DOWN: {
+                if (activePointerId == -1) {
+                    activePointerId = pointerId;
+                    // Prevent parent from stealing this pointer
+                    ViewParent parent = getParent();
+                    if (parent != null) {
+                        parent.requestDisallowInterceptTouchEvent(true);
+                    }
+                    float x = e.getX(actionIndex);
+                    float y = e.getY(actionIndex);
+                    updateKnob(x, y);
+                    updateKeys();
+                    invalidate();
+                    return true;
+                }
+                return false;
+            }
+
+            case MotionEvent.ACTION_MOVE: {
+                if (activePointerId == -1) return false;
+
+                int idx = e.findPointerIndex(activePointerId);
+                if (idx < 0) {
+                    releaseStick();
+                    return true;
+                }
+
+                float x = e.getX(idx);
+                float y = e.getY(idx);
                 updateKnob(x, y);
                 updateKeys();
                 invalidate();
                 return true;
+            }
 
             case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                knobX = cx;
-                knobY = cy;
-                clearAllKeys();
-                invalidate();
-                return true;
+            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_CANCEL: {
+                if (pointerId == activePointerId) {
+                    releaseStick();
+                    return true;
+                }
+                return false;
+            }
         }
         return super.onTouchEvent(e);
+    }
+
+    private void releaseStick() {
+        activePointerId = -1;
+        knobX = cx;
+        knobY = cy;
+        clearAllKeys();
+        invalidate();
+
+        ViewParent parent = getParent();
+        if (parent != null) {
+            parent.requestDisallowInterceptTouchEvent(false);
+        }
     }
 
     private void updateKnob(float x, float y) {
         float dx = x - cx;
         float dy = y - cy;
-        float dist = (float)Math.sqrt(dx*dx + dy*dy);
+        float dist = (float) Math.sqrt(dx * dx + dy * dy);
         float maxDist = radius * 0.6f;
         if (dist > maxDist) {
             dx = dx / dist * maxDist;
@@ -103,32 +163,35 @@ public class JoystickView extends View {
         float dx = knobX - cx;
         float dy = knobY - cy;
 
+        // Forward / Back
         if (dy < -deadzone) {
-            if (!upHeld) { SDLActivity.onNativeKeyDown(KEY_UP); upHeld = true; }
+            if (!forwardHeld) { SDLActivity.onNativeKeyDown(KEY_FORWARD); forwardHeld = true; }
         } else {
-            if (upHeld) { SDLActivity.onNativeKeyUp(KEY_UP); upHeld = false; }
+            if (forwardHeld) { SDLActivity.onNativeKeyUp(KEY_FORWARD); forwardHeld = false; }
         }
         if (dy > deadzone) {
-            if (!downHeld) { SDLActivity.onNativeKeyDown(KEY_DOWN); downHeld = true; }
+            if (!backHeld) { SDLActivity.onNativeKeyDown(KEY_BACK); backHeld = true; }
         } else {
-            if (downHeld) { SDLActivity.onNativeKeyUp(KEY_DOWN); downHeld = false; }
+            if (backHeld) { SDLActivity.onNativeKeyUp(KEY_BACK); backHeld = false; }
         }
+
+        // Strafe Left / Right (NO turning!)
         if (dx < -deadzone) {
-            if (!leftHeld) { SDLActivity.onNativeKeyDown(KEY_LEFT); leftHeld = true; }
+            if (!strafeLeftHeld) { SDLActivity.onNativeKeyDown(KEY_STRAFE_LEFT); strafeLeftHeld = true; }
         } else {
-            if (leftHeld) { SDLActivity.onNativeKeyUp(KEY_LEFT); leftHeld = false; }
+            if (strafeLeftHeld) { SDLActivity.onNativeKeyUp(KEY_STRAFE_LEFT); strafeLeftHeld = false; }
         }
         if (dx > deadzone) {
-            if (!rightHeld) { SDLActivity.onNativeKeyDown(KEY_RIGHT); rightHeld = true; }
+            if (!strafeRightHeld) { SDLActivity.onNativeKeyDown(KEY_STRAFE_RIGHT); strafeRightHeld = true; }
         } else {
-            if (rightHeld) { SDLActivity.onNativeKeyUp(KEY_RIGHT); rightHeld = false; }
+            if (strafeRightHeld) { SDLActivity.onNativeKeyUp(KEY_STRAFE_RIGHT); strafeRightHeld = false; }
         }
     }
 
     private void clearAllKeys() {
-        if (upHeld)    { SDLActivity.onNativeKeyUp(KEY_UP);    upHeld = false; }
-        if (downHeld)  { SDLActivity.onNativeKeyUp(KEY_DOWN);  downHeld = false; }
-        if (leftHeld)  { SDLActivity.onNativeKeyUp(KEY_LEFT);  leftHeld = false; }
-        if (rightHeld) { SDLActivity.onNativeKeyUp(KEY_RIGHT); rightHeld = false; }
+        if (forwardHeld)     { SDLActivity.onNativeKeyUp(KEY_FORWARD);     forwardHeld = false; }
+        if (backHeld)        { SDLActivity.onNativeKeyUp(KEY_BACK);        backHeld = false; }
+        if (strafeLeftHeld)  { SDLActivity.onNativeKeyUp(KEY_STRAFE_LEFT); strafeLeftHeld = false; }
+        if (strafeRightHeld) { SDLActivity.onNativeKeyUp(KEY_STRAFE_RIGHT); strafeRightHeld = false; }
     }
 }
